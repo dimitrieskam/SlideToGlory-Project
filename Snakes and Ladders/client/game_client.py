@@ -8,13 +8,18 @@ import json  # Import JSON for serializing and deserializing local profile and s
 import pyperclip  # Import pyperclip to copy invite links to the system clipboard
 import time  # Import time for timing-related utilities (e.g., duration measurements)
 import os  # Import os for filesystem operations like checking and reading files
-
+from urllib.parse import urlparse
 from snake_ladder_game import \
     SnakeLadderGame  # Import the core game class that renders and runs the board GUI and logic
 
-SERVER_URL = "http://localhost:8000"  # Base URL for the backend server used by this client
+SERVER_URL = "https://slidetoglory-project-2.onrender.com"
 
 
+def build_ws_url(session_id: str) -> str:
+    parsed = urlparse(SERVER_URL)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    host = parsed.netloc
+    return f"{scheme}://{host}/ws/{session_id}"
 class GameClient:  # Define the main application class that handles UI flow, auth, and game sessions
     def __init__(self):  # Constructor for the GameClient class
         self.root = tk.Tk()  # Create the main Tkinter root window
@@ -297,6 +302,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
         except:
             pass  # If reading the scores fails, silently ignore
 
+
     def logout(self):
         """Излегување од акаунтот"""  # English: Log the user out
         self.username = None  # Clear logged-in username
@@ -369,7 +375,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
                           font=("Arial", 12, "bold"), bg="#27ae60", fg="white",
                           padx=20, pady=8, relief=tk.FLAT).pack(pady=15)  # Button to copy link again if needed
 
-                ws_url = f"ws://localhost:8000/ws/{session_id}"  # Construct the websocket URL for the created session
+                ws_url = build_ws_url(session_id)  # Construct the websocket URL for the created session
                 current_display_name = self.display_name or self.username  # Determine display name for the host player
                 current_display_avatar = self.display_avatar or self.avatar  # Determine display avatar for the host player
 
@@ -395,7 +401,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
             return  # If user cancels or enters nothing, abort
         try:
             session_id = invite_link.strip().split("/")[-1]  # Extract the session id from the invite URL
-            ws_url = f"ws://localhost:8000/ws/{session_id}"  # Build websocket URL for the session
+            ws_url =  build_ws_url(session_id)  # Build websocket URL for the session
 
             current_display_name = self.display_name or self.username  # Choose display name for joining player
             current_display_avatar = self.display_avatar or self.avatar  # Choose display avatar for joining player
