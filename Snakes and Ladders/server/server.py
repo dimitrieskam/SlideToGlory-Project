@@ -1,6 +1,6 @@
 import uuid  # For generating unique session IDs
 import uvicorn  # ASGI server to run FastAPI
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from database import SessionLocal, create_db, User  # DB session and User model
 
