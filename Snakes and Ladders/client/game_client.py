@@ -15,11 +15,11 @@ from snake_ladder_game import \
 SERVER_URL = "https://slidetoglory-project-2.onrender.com"
 
 
-def build_ws_url(session_id: str) -> str:
+def build_ws_url(session_id: str, username: str) -> str:
     parsed = urlparse(SERVER_URL)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     host = parsed.netloc
-    return f"{scheme}://{host}/ws/{session_id}"
+    return f"{scheme}://{host}/ws/{session_id}/{username}"
 class GameClient:  # Define the main application class that handles UI flow, auth, and game sessions
     def __init__(self):  # Constructor for the GameClient class
         self.root = tk.Tk()  # Create the main Tkinter root window
@@ -375,7 +375,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
                           font=("Arial", 12, "bold"), bg="#27ae60", fg="white",
                           padx=20, pady=8, relief=tk.FLAT).pack(pady=15)  # Button to copy link again if needed
 
-                ws_url = build_ws_url(session_id)  # Construct the websocket URL for the created session
+                ws_url = build_ws_url(session_id, self.username)  # Construct the websocket URL for the created session
                 current_display_name = self.display_name or self.username  # Determine display name for the host player
                 current_display_avatar = self.display_avatar or self.avatar  # Determine display avatar for the host player
 
@@ -401,7 +401,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
             return  # If user cancels or enters nothing, abort
         try:
             session_id = invite_link.strip().split("/")[-1]  # Extract the session id from the invite URL
-            ws_url =  build_ws_url(session_id)  # Build websocket URL for the session
+            ws_url = build_ws_url(session_id, self.username)  # Build websocket URL for the session
 
             current_display_name = self.display_name or self.username  # Choose display name for joining player
             current_display_avatar = self.display_avatar or self.avatar  # Choose display avatar for joining player
@@ -473,10 +473,12 @@ class GameClient:  # Define the main application class that handles UI flow, aut
 
     # ---------- WebSocket handlers ----------
     def on_ws_message(self, ws, message: str):
-        """Обработка на WebSocket пораки"""  # English: Receive and forward WebSocket messages to the active game instance
-        if hasattr(self, "game_instance") and self.game_instance:
-            self.game_instance.on_ws_message(
-                message)  # Delegate processing of the incoming message to the game instance
+        data = json.loads(message)
+        if data["type"] == "state_update":
+            if hasattr(self, "game_instance"):
+                self.game_instance.apply_server_state(data)
+        elif data["type"] == "notice":
+            print("Server notice:", data["message"])
 
     def on_game_end(self, winner_idx: int):
         """Кога играта завршува"""  # English: Called when a game finishes to perform cleanup and return to menu

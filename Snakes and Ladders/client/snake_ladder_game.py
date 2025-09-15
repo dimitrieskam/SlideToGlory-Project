@@ -140,11 +140,8 @@ class SnakeLadderGame:
 
         # WebSocket иницијализација
         if self.ws_connected:
-            self.safe_ws_send_json({
-                "type": "hello",
-                "name": self.player_names[0] if self.is_host else self.player_names[1],
-                "avatar": self.player_avatars[0] if self.is_host else self.player_avatars[1]
-            })
+            self.safe_ws_send_json({"action": "roll", "player": self.logged_username})
+            return
 
     def setup_controls(self):
         # Заглавие
@@ -503,27 +500,19 @@ class SnakeLadderGame:
             return
 
         self.roll_button.config(state=tk.DISABLED)
-        self.animate_dice()
+
+        if self.ws_connected:
+            # ✅ Only tell server to roll
+            self.safe_ws_send_json({"action": "roll", "player": self.logged_username})
+        else:
+            # Singleplayer fallback
+            self.animate_dice()
 
     def animate_dice(self, frame=0):
         if frame < 15:
             value = random.randint(1, 6)
             self.dice_label.config(image=self.dice_images[value - 1])
             self.root.after(80, lambda: self.animate_dice(frame + 1))
-        else:
-            self.dice_value = random.randint(1, 6)
-            self.dice_label.config(image=self.dice_images[self.dice_value - 1])
-            self.status_label.config(
-                text=f"{self.player_names[self.current_player]} rolled {self.dice_value}.\nClick your token to move.")
-            self.movable = True
-            self.roll_button.config(state=tk.NORMAL)
-
-            if self.ws_connected:
-                self.safe_ws_send_json({"type": "roll", "value": self.dice_value})
-
-            # Автоматско движење за бот
-            if self.singleplayer and self.current_player == 1:
-                self.root.after(800, lambda: self.try_move(1))
 
     def try_move(self, player: int):
         if player != self.current_player or not self.movable:
@@ -692,6 +681,7 @@ class SnakeLadderGame:
             if player_idx < len(self.labels):
                 self.canvas.itemconfig(self.labels[player_idx], text=avatar)
 
+
     # ---------- WebSocket handler ----------
     def on_ws_message(self, message: str):
         try:
@@ -699,21 +689,44 @@ class SnakeLadderGame:
         except json.JSONDecodeError:
             return
 
-        if obj.get("type") == "hello":
+        if obj.get("type") == "state_update":
+            self.apply_server_state(obj)
+        elif obj.get("type") == "hello":
             name = obj.get("name", "Player")
             avatar = obj.get("avatar", "🙂")
-
             if self.is_host:
                 self.update_player_info(1, name, avatar)
             else:
                 self.update_player_info(0, name, avatar)
-
-        elif obj.get("type") == "roll":
-            their_value = int(obj.get("value", 1))
-            self.dice_value = their_value
-            if 1 <= their_value <= 6:
-                self.dice_label.config(image=self.dice_images[their_value - 1])
-            self.movable = True
-
         elif obj.get("type") == "reset":
             self.reset_game()
+    def move_piece(self, pname, pos):
+        """Move a player by name (string) instead of index"""
+        if pname not in self.player_names:
+            return
+        idx = self.player_names.index(pname)
+        self.positions[idx] = pos
+        self.move_token(idx)
+
+    def show_turn(self, turn, last_roll, player):
+        """Update UI labels to reflect turn and dice result"""
+        if last_roll and player:
+            self.status_label.config(
+                text=f"{player} rolled {last_roll}. Now it's {turn}'s turn."
+            )
+            self.dice_label.config(image=self.dice_images[last_roll - 1])
+        else:
+            self.status_label.config(text=f"It's {turn}'s turn.")
+
+    def apply_server_state(self, state):
+        positions = state["positions"]
+        turn = state["turn"]
+        last_roll = state.get("last_roll")
+        player = state.get("player")
+
+        # Update board UI using positions
+        for pname, pos in positions.items():
+            self.move_piece(pname, pos)
+
+        # Update whose turn
+        self.show_turn(turn, last_roll, player)
