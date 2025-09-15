@@ -1,41 +1,38 @@
-import uuid  # For generating unique session IDs
-import uvicorn  # ASGI server to run FastAPI
+import uuid
+import uvicorn
+import random
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from database import SessionLocal, create_db, User  # DB session and User model
+from database import SessionLocal, create_db, User  # Your DB setup
 
-# Create FastAPI application
 app = FastAPI(title="Snake & Ladder Server")
 
-# Dictionary to keep track of connected WebSocket clients
-# Key = session_id (string), Value = list of WebSocket connections
+# Track connected clients per session
 clients: dict[str, list[WebSocket]] = {}
 
-# Enable CORS (so browser-based clients can connect from anywhere)
+# Track game states per session
+games: dict[str, dict] = {}  # session_id -> {"positions": {}, "turn": str | None}
+
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow all origins (you can restrict this later)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # allow all HTTP methods
-    allow_headers=["*"]  # allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Ensure database/tables exist at startup
+# Ensure DB exists
 create_db()
 
+# ========= REST API ==========
 
-# ========== REST API ENDPOINTS ==========
-
-# Register a new user
 @app.post("/register")
 async def register(username: str, password: str, avatar: str = "🙂"):
     db = SessionLocal()
     try:
-        # Check if username is already taken
         if db.query(User).filter(User.username == username).first():
             return {"status": "error", "message": "Username taken."}
-
-        # Create and save new user
         user = User(username=username, password=password, avatar=avatar)
         db.add(user)
         db.commit()
@@ -44,12 +41,10 @@ async def register(username: str, password: str, avatar: str = "🙂"):
         db.close()
 
 
-# Login endpoint
 @app.post("/login")
 async def login(username: str, password: str):
     db = SessionLocal()
     try:
-        # Check if username+password match
         user = db.query(User).filter(User.username == username, User.password == password).first()
         if user:
             return {
@@ -63,115 +58,84 @@ async def login(username: str, password: str):
         db.close()
 
 
-# Create a new game session
 @app.post("/create_session")
-async def create_session(request: Request):  # add request param
+async def create_session(request: Request):
     session_id = str(uuid.uuid4())
-    base_url = str(request.base_url).rstrip("/")  # e.g. https://slidetoglory-project-2.onrender.com
+    base_url = str(request.base_url).rstrip("/")
     return {"session_id": session_id, "invite_link": f"{base_url}/join/{session_id}"}
 
-# WebSocket endpoint (real-time communication for game sessions)
-@app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    await websocket.accept()  # Accept connection
 
-    # Register client in session
+# ========= GAME WEBSOCKET ==========
+
+@app.websocket("/ws/{session_id}/{username}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str, username: str):
+    await websocket.accept()
+
+    # Register client
     if session_id not in clients:
         clients[session_id] = []
+        games[session_id] = {"positions": {}, "turn": None}
+
     clients[session_id].append(websocket)
+    games[session_id]["positions"].setdefault(username, 0)
 
     try:
-        while True:
-            # Receive message from one client
-            data = await websocket.receive_text()
+        # Notify everyone that a player joined
+        await broadcast_state(session_id, f"{username} joined the game!")
 
-            # Broadcast message to all other clients in same session
-            for client in list(clients.get(session_id, [])):
-                if client is not websocket:
-                    try:
-                        await client.send_text(data)
-                    except RuntimeError:
-                        # Ignore if sending fails
-                        pass
+        while True:
+            data = await websocket.receive_json()
+            action = data.get("action")
+
+            if action == "roll":
+                roll = random.randint(1, 6)
+                pos = games[session_id]["positions"].get(username, 0)
+                new_pos = min(pos + roll, 100)
+                games[session_id]["positions"][username] = new_pos
+
+                # Switch turns
+                players = list(games[session_id]["positions"].keys())
+                if games[session_id]["turn"] is None:
+                    games[session_id]["turn"] = players[0]
+                else:
+                    idx = players.index(username)
+                    games[session_id]["turn"] = players[(idx + 1) % len(players)]
+
+                # Build update message
+                message = {
+                    "type": "state_update",
+                    "positions": games[session_id]["positions"],
+                    "turn": games[session_id]["turn"],
+                    "last_roll": roll,
+                    "player": username,
+                }
+                await broadcast(session_id, message)
+
     except WebSocketDisconnect:
-        # Remove client when disconnected
         clients[session_id].remove(websocket)
-        # If session is empty → delete it
         if not clients[session_id]:
             clients.pop(session_id, None)
+            games.pop(session_id, None)
 
 
-# Update user statistics after a game
-@app.post("/update_stats")
-async def update_stats(username: str, result: str, duration: int | None = None):
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.username == username).first()
-        if not user:
-            return {"status": "error", "message": "User not found"}
-
-        # Update stats based on game result
-        if result == "win":
-            user.wins += 1
-            # Update fastest win if better than previous
-            if duration is not None and duration < user.fastest_win_seconds:
-                user.fastest_win_seconds = duration
-        elif result == "loss":
-            user.losses += 1
-        else:
-            return {"status": "error", "message": "Invalid result"}
-
-        db.commit()
-        return {"status": "success"}
-    finally:
-        db.close()
+async def broadcast(session_id: str, message: dict):
+    for ws in list(clients.get(session_id, [])):
+        try:
+            await ws.send_json(message)
+        except Exception:
+            pass
 
 
-# Update user profile (username or avatar)
-@app.post("/update_profile")
-async def update_profile(username: str, avatar: str = "🙂", new_name: str | None = None):
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.username == username).first()
-        if not user:
-            return {"status": "error", "message": "User not found"}
-
-        # Change username if requested and available
-        if new_name and new_name != username:
-            if db.query(User).filter(User.username == new_name).first():
-                return {"status": "error", "message": "Username already taken"}
-            user.username = new_name
-
-        # Change avatar
-        if avatar:
-            user.avatar = avatar
-
-        db.commit()
-        return {"status": "success", "username": user.username, "avatar": user.avatar}
-    finally:
-        db.close()
+async def broadcast_state(session_id: str, notice: str):
+    await broadcast(session_id, {
+        "type": "notice",
+        "message": notice,
+        "positions": games[session_id]["positions"],
+        "turn": games[session_id]["turn"],
+    })
 
 
-# Get user statistics
-@app.get("/stats")
-async def get_stats(username: str):
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.username == username).first()
-        if not user:
-            return {"status": "error", "message": "User not found"}
-        return {
-            "username": user.username,
-            "avatar": user.avatar,
-            "wins": user.wins,
-            "losses": user.losses,
-            "fastest_win_seconds": user.fastest_win_seconds
-        }
-    finally:
-        db.close()
+# ========= RUN SERVER =========
 
-
-# Run server directly (python server.py)
 if __name__ == "__main__":
-    # Run uvicorn server on localhost:8000 with autoreload
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
