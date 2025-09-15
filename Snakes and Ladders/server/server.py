@@ -65,11 +65,10 @@ async def login(username: str, password: str):
 
 # Create a new game session
 @app.post("/create_session")
-async def create_session():
-    session_id = str(uuid.uuid4())  # Unique session ID
-    # Generate an invite link (client extracts session_id from URL)
-    return {"session_id": session_id, "invite_link": f"http://localhost:8000/join/{session_id}"}
-
+async def create_session(request: Request):  # add request param
+    session_id = str(uuid.uuid4())
+    base_url = str(request.base_url).rstrip("/")  # e.g. https://slidetoglory-project-2.onrender.com
+    return {"session_id": session_id, "invite_link": f"{base_url}/join/{session_id}"}
 
 # WebSocket endpoint (real-time communication for game sessions)
 @app.websocket("/ws/{session_id}")
