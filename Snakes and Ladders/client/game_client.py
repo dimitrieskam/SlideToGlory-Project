@@ -15,11 +15,13 @@ from snake_ladder_game import \
 SERVER_URL = "https://slidetoglory-project-2.onrender.com"
 
 
-def build_ws_url(session_id: str) -> str:
+def build_ws_url(session_id: str, username: str) -> str:
     parsed = urlparse(SERVER_URL)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     host = parsed.netloc
-    return f"{scheme}://{host}/ws/{session_id}"
+    return f"{scheme}://{host}/ws/{session_id}/{username}"
+
+
 class GameClient:  # Define the main application class that handles UI flow, auth, and game sessions
     def __init__(self):  # Constructor for the GameClient class
         self.root = tk.Tk()  # Create the main Tkinter root window
@@ -27,7 +29,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
         self.root.configure(bg="#2a9d8f")  # Set the base background color for the root window
         self.username = None  # # Logged-in username (None if offline)
         self.avatar = "🙂"  # Default avatar emoji for the user
-        self.display_name = None # Display name shown in games (can differ from account)
+        self.display_name = None  # Display name shown in games (can differ from account)
         self.display_avatar = None  # Avatar used in-game (can be different from account avatar)
         self.is_host = True  # Tracks whether this client created (hosts) an online session
         self.local_profile = self.load_local_profile()  # Load local profile data for offline use
@@ -302,7 +304,6 @@ class GameClient:  # Define the main application class that handles UI flow, aut
         except:
             pass  # If reading the scores fails, silently ignore
 
-
     def logout(self):
         """Излегување од акаунтот"""  # English: Log the user out
         self.username = None  # Clear logged-in username
@@ -375,7 +376,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
                           font=("Arial", 12, "bold"), bg="#27ae60", fg="white",
                           padx=20, pady=8, relief=tk.FLAT).pack(pady=15)  # Button to copy link again if needed
 
-                ws_url = build_ws_url(session_id)  # Construct the websocket URL for the created session
+                ws_url = build_ws_url(session_id, self.username)  # Construct the websocket URL for the created session
                 current_display_name = self.display_name or self.username  # Determine display name for the host player
                 current_display_avatar = self.display_avatar or self.avatar  # Determine display avatar for the host player
 
@@ -401,7 +402,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
             return  # If user cancels or enters nothing, abort
         try:
             session_id = invite_link.strip().split("/")[-1]  # Extract the session id from the invite URL
-            ws_url =  build_ws_url(session_id)  # Build websocket URL for the session
+            ws_url = build_ws_url(session_id, self.username)  # Build websocket URL for the session
 
             current_display_name = self.display_name or self.username  # Choose display name for joining player
             current_display_avatar = self.display_avatar or self.avatar  # Choose display avatar for joining player
@@ -430,7 +431,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
                 ws_url,
                 on_message=self.on_ws_message,
                 on_close=lambda ws, *args: print("Disconnected from session."),
-                on_open=lambda ws, *args: print("Connected to session.")
+                on_open=lambda ws, *args: self.on_ws_open(ws, player_name, player_avatar)
             )  # Create a websocket client and wire callbacks for receiving messages and lifecycle events
             threading.Thread(target=self.ws_app.run_forever,
                              daemon=True).start()  # Run the websocket client in a background thread so UI remains responsive
@@ -472,11 +473,87 @@ class GameClient:  # Define the main application class that handles UI flow, aut
         )  # Instantiate the SnakeLadderGame which will render the board and manage gameplay logic
 
     # ---------- WebSocket handlers ----------
+    def on_ws_open(self, ws, player_name, player_avatar):
+        """Called when WebSocket connection opens"""
+        # Send player information to server
+        player_info = {
+            "action": "player_info",
+            "display_name": player_name or self.display_name or self.username or "Player",
+            "display_avatar": player_avatar or self.display_avatar or self.avatar or "🙂"
+        }
+        try:
+            ws.send(json.dumps(player_info))
+            print(f"Sent player info: {player_info}")
+        except Exception as e:
+            print(f"Failed to send player info: {e}")
+
     def on_ws_message(self, ws, message: str):
-        """Обработка на WebSocket пораки"""  # English: Receive and forward WebSocket messages to the active game instance
-        if hasattr(self, "game_instance") and self.game_instance:
-            self.game_instance.on_ws_message(
-                message)  # Delegate processing of the incoming message to the game instance
+        """Handle WebSocket messages"""
+        try:
+            data = json.loads(message)
+            print(f"Received: {data}")  # Debug logging
+
+            if hasattr(self, "game_instance"):
+                if data["type"] == "state_update":
+                    self.game_instance.apply_server_state(data)
+                elif data["type"] == "player_info_update":
+                    self.update_game_players(data["players"])
+                elif data["type"] == "game_state":
+                    # Initial game state when joining
+                    self.game_instance.apply_server_state(data)
+                    if "players" in data:
+                        self.update_game_players(data["players"])
+                elif data["type"] == "notice":
+                    print("Server notice:", data["message"])
+                    # Also update players info if included
+                    if "players" in data:
+                        self.update_game_players(data["players"])
+
+        except json.JSONDecodeError:
+            print(f"Invalid JSON received: {message}")
+        except Exception as e:
+            print(f"Error handling message: {e}")
+
+    def update_game_players(self, players_data):
+        """Update player names and avatars in the game instance"""
+        if not hasattr(self, "game_instance") or not players_data:
+            return
+
+        # Determine who is me and who is the opponent
+        me = self.username
+        others = [u for u in players_data if u != me]
+        other = others[0] if others else None
+
+        if self.is_host:
+            # Host is always slot 0
+            if me in players_data:
+                self.game_instance.update_player_info(
+                    0,
+                    players_data[me]["display_name"],
+                    players_data[me]["display_avatar"]
+                )
+            if other and other in players_data:
+                self.game_instance.update_player_info(
+                    1,
+                    players_data[other]["display_name"],
+                    players_data[other]["display_avatar"]
+                )
+        else:
+            # Guest is always slot 1
+            if other and other in players_data:
+                self.game_instance.update_player_info(
+                    0,
+                    players_data[other]["display_name"],
+                    players_data[other]["display_avatar"]
+                )
+            if me in players_data:
+                self.game_instance.update_player_info(
+                    1,
+                    players_data[me]["display_name"],
+                    players_data[me]["display_avatar"]
+                )
+
+        print(f"Updated game players: {players_data}")
 
     def on_game_end(self, winner_idx: int):
         """Кога играта завршува"""  # English: Called when a game finishes to perform cleanup and return to menu
