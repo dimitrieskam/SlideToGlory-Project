@@ -61,6 +61,10 @@ class SnakeLadderGame:
         self.server_update_fn = server_update_fn
         self.logged_username = logged_username
 
+        # Store username to display name mapping for online games
+        self.username_to_display = {}
+        self.display_to_username = {}
+
         self.start_time = time.time()
         self.total_moves = [0, 0]
 
@@ -494,18 +498,24 @@ class SnakeLadderGame:
             self.status_label.config(text="Move your token first!")
             return
 
-        if self.ws_connected and ((self.is_host and self.current_player != 0) or
-                                  (not self.is_host and self.current_player != 1)):
-            self.status_label.config(text="Wait for opponent.")
-            return
-
-        self.roll_button.config(state=tk.DISABLED)
-
         if self.ws_connected:
-            # ✅ Only tell server to roll
+            # Check if it's this player's turn
+            can_roll = False
+            if self.is_host and self.current_player == 0:
+                can_roll = True
+            elif not self.is_host and self.current_player == 1:
+                can_roll = True
+
+            if not can_roll:
+                self.status_label.config(text="Wait for your turn!")
+                return
+
+            self.roll_button.config(state=tk.DISABLED)
+            # Send roll request to server
             self.safe_ws_send_json({"action": "roll", "player": self.logged_username})
         else:
-            # Singleplayer fallback
+            # Singleplayer logic
+            self.roll_button.config(state=tk.DISABLED)
             self.animate_dice()
 
     def animate_dice(self, frame=0):
@@ -513,6 +523,12 @@ class SnakeLadderGame:
             value = random.randint(1, 6)
             self.dice_label.config(image=self.dice_images[value - 1])
             self.root.after(80, lambda: self.animate_dice(frame + 1))
+        else:
+            # Final roll value
+            self.dice_value = random.randint(1, 6)
+            self.dice_label.config(image=self.dice_images[self.dice_value - 1])
+            self.movable = True
+            self.roll_button.config(state=tk.NORMAL)
 
     def try_move(self, player: int):
         if player != self.current_player or not self.movable:
@@ -681,7 +697,6 @@ class SnakeLadderGame:
             if player_idx < len(self.labels):
                 self.canvas.itemconfig(self.labels[player_idx], text=avatar)
 
-
     # ---------- WebSocket handler ----------
     def on_ws_message(self, message: str):
         try:
@@ -691,15 +706,121 @@ class SnakeLadderGame:
 
         if obj.get("type") == "state_update":
             self.apply_server_state(obj)
-        elif obj.get("type") == "hello":
-            name = obj.get("name", "Player")
-            avatar = obj.get("avatar", "🙂")
-            if self.is_host:
-                self.update_player_info(1, name, avatar)
-            else:
-                self.update_player_info(0, name, avatar)
+        elif obj.get("type") == "player_info_update":
+            if "players" in obj:
+                self.update_players_from_server(obj["players"])
+        elif obj.get("type") == "game_state":
+            # Initial game state when connecting
+            self.apply_server_state(obj)
+        elif obj.get("type") == "notice":
+            print(f"Game notice: {obj.get('message')}")
+            # Update positions and turn if included in notice
+            if "positions" in obj:
+                for pname, pos in obj["positions"].items():
+                    self.move_piece_by_name(pname, pos)
+            if "turn" in obj and obj["turn"]:
+                turn_display = self.get_display_name_for_username(obj["turn"])
+                if turn_display in self.player_names:
+                    self.current_player = self.player_names.index(turn_display)
         elif obj.get("type") == "reset":
             self.reset_game()
+
+    def apply_server_state(self, state):
+        """Apply server state updates to the game"""
+        positions = state.get("positions", {})
+        turn = state.get("turn")
+        last_roll = state.get("last_roll")
+        player = state.get("player")
+        players_info = state.get("players", {})
+
+        # Update player information if provided
+        if players_info:
+            self.update_players_from_server(players_info)
+
+        # Update board positions
+        for pname, pos in positions.items():
+            self.move_piece_by_name(pname, pos)
+
+        # Update turn information
+        if turn and last_roll and player:
+            # Find the display name for the turn
+            turn_display_name = self.get_display_name_for_username(turn)
+            player_display_name = self.get_display_name_for_username(player)
+
+            self.show_turn(turn_display_name, last_roll, player_display_name)
+            self.dice_label.config(image=self.dice_images[last_roll - 1])
+
+            # Set current player based on turn
+            if turn_display_name in self.player_names:
+                self.current_player = self.player_names.index(turn_display_name)
+                self.movable = True  # Allow movement
+                self.roll_button.config(state=tk.NORMAL)
+            else:
+                self.movable = False
+
+    def update_players_from_server(self, players_info):
+        """Update player names and avatars from server data"""
+        if not players_info:
+            return
+
+        usernames = list(players_info.keys())
+
+        # Build username to display name mapping
+        self.username_to_display = {}
+        self.display_to_username = {}
+
+        for i, username in enumerate(usernames):
+            if i < len(self.player_names):
+                player_info = players_info[username]
+                display_name = player_info.get("display_name", username)
+                display_avatar = player_info.get("display_avatar", "🙂")
+
+                # Map server username to game position
+                if self.is_host:
+                    # Host: first username goes to player 0, second to player 1
+                    player_idx = i
+                else:
+                    # Joiner: reverse the mapping
+                    player_idx = 1 - i if len(usernames) == 2 else i
+
+                if 0 <= player_idx < len(self.player_names):
+                    self.update_player_info(player_idx, display_name, display_avatar)
+
+                # Store mappings
+                self.username_to_display[username] = display_name
+                self.display_to_username[display_name] = username
+
+    def get_display_name_for_username(self, username):
+        """Get display name for a given username"""
+        return self.username_to_display.get(username, username)
+
+    def move_piece_by_name(self, username, pos):
+        """Move a player piece by username"""
+        # Get display name from username
+        display_name = self.get_display_name_for_username(username)
+
+        # Find player index by display name
+        if display_name in self.player_names:
+            idx = self.player_names.index(display_name)
+            self.positions[idx] = pos
+            self.move_token(idx)
+            return
+
+        # Fallback: try direct username match
+        if username in self.player_names:
+            idx = self.player_names.index(username)
+            self.positions[idx] = pos
+            self.move_token(idx)
+
+    def show_turn(self, turn_player, last_roll, rolling_player):
+        """Update UI to show whose turn it is"""
+        if last_roll and rolling_player:
+            self.status_label.config(
+                text=f"{rolling_player} rolled {last_roll}. Now it's {turn_player}'s turn."
+            )
+        else:
+            self.status_label.config(text=f"It's {turn_player}'s turn.")
+
     def move_piece(self, pname, pos):
         """Move a player by name (string) instead of index"""
         if pname not in self.player_names:
@@ -717,16 +838,3 @@ class SnakeLadderGame:
             self.dice_label.config(image=self.dice_images[last_roll - 1])
         else:
             self.status_label.config(text=f"It's {turn}'s turn.")
-
-    def apply_server_state(self, state):
-        positions = state["positions"]
-        turn = state["turn"]
-        last_roll = state.get("last_roll")
-        player = state.get("player")
-
-        # Update board UI using positions
-        for pname, pos in positions.items():
-            self.move_piece(pname, pos)
-
-        # Update whose turn
-        self.show_turn(turn, last_roll, player)

@@ -10,8 +10,8 @@ app = FastAPI(title="Snake & Ladder Server")
 # Track connected clients per session
 clients: dict[str, list[WebSocket]] = {}
 
-# Track game states per session
-games: dict[str, dict] = {}  # session_id -> {"positions": {}, "turn": str | None}
+# Track game states per session - now includes player info
+games: dict[str, dict] = {}  # session_id -> {"positions": {}, "turn": str | None, "players": {}}
 
 # Enable CORS
 app.add_middleware(
@@ -24,6 +24,7 @@ app.add_middleware(
 
 # Ensure DB exists
 create_db()
+
 
 # ========= REST API ==========
 
@@ -74,12 +75,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, username: st
     # Register client
     if session_id not in clients:
         clients[session_id] = []
-        games[session_id] = {"positions": {}, "turn": None}
+        games[session_id] = {"positions": {}, "turn": None, "players": {}}
 
     clients[session_id].append(websocket)
     games[session_id]["positions"].setdefault(username, 0)
 
     try:
+        # Send current game state to the new player
+        await websocket.send_json({
+            "type": "game_state",
+            "positions": games[session_id]["positions"],
+            "players": games[session_id]["players"],
+            "turn": games[session_id]["turn"]
+        })
+
         # Notify everyone that a player joined
         await broadcast_state(session_id, f"{username} joined the game!")
 
@@ -87,7 +96,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, username: st
             data = await websocket.receive_json()
             action = data.get("action")
 
-            if action == "roll":
+            if action == "player_info":
+                # Store player information
+                display_name = data.get("display_name", username)
+                display_avatar = data.get("display_avatar", "🙂")
+                games[session_id]["players"][username] = {
+                    "display_name": display_name,
+                    "display_avatar": display_avatar
+                }
+
+                # Broadcast updated player info to all clients
+                await broadcast(session_id, {
+                    "type": "player_info_update",
+                    "players": games[session_id]["players"]
+                })
+
+            elif action == "roll":
                 roll = random.randint(1, 6)
                 pos = games[session_id]["positions"].get(username, 0)
                 new_pos = min(pos + roll, 100)
@@ -98,8 +122,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, username: st
                 if games[session_id]["turn"] is None:
                     games[session_id]["turn"] = players[0]
                 else:
-                    idx = players.index(username)
-                    games[session_id]["turn"] = players[(idx + 1) % len(players)]
+                    current_idx = players.index(username)
+                    games[session_id]["turn"] = players[(current_idx + 1) % len(players)]
 
                 # Build update message
                 message = {
@@ -108,14 +132,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, username: st
                     "turn": games[session_id]["turn"],
                     "last_roll": roll,
                     "player": username,
+                    "players": games[session_id]["players"]
                 }
                 await broadcast(session_id, message)
 
     except WebSocketDisconnect:
         clients[session_id].remove(websocket)
+        if username in games[session_id]["positions"]:
+            del games[session_id]["positions"][username]
+        if username in games[session_id]["players"]:
+            del games[session_id]["players"][username]
+
         if not clients[session_id]:
             clients.pop(session_id, None)
             games.pop(session_id, None)
+        else:
+            # Broadcast player disconnection
+            await broadcast_state(session_id, f"{username} left the game")
 
 
 async def broadcast(session_id: str, message: dict):
@@ -132,6 +165,7 @@ async def broadcast_state(session_id: str, notice: str):
         "message": notice,
         "positions": games[session_id]["positions"],
         "turn": games[session_id]["turn"],
+        "players": games[session_id]["players"],
     })
 
 

@@ -20,6 +20,8 @@ def build_ws_url(session_id: str, username: str) -> str:
     scheme = "wss" if parsed.scheme == "https" else "ws"
     host = parsed.netloc
     return f"{scheme}://{host}/ws/{session_id}/{username}"
+
+
 class GameClient:  # Define the main application class that handles UI flow, auth, and game sessions
     def __init__(self):  # Constructor for the GameClient class
         self.root = tk.Tk()  # Create the main Tkinter root window
@@ -27,7 +29,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
         self.root.configure(bg="#2a9d8f")  # Set the base background color for the root window
         self.username = None  # # Logged-in username (None if offline)
         self.avatar = "🙂"  # Default avatar emoji for the user
-        self.display_name = None # Display name shown in games (can differ from account)
+        self.display_name = None  # Display name shown in games (can differ from account)
         self.display_avatar = None  # Avatar used in-game (can be different from account avatar)
         self.is_host = True  # Tracks whether this client created (hosts) an online session
         self.local_profile = self.load_local_profile()  # Load local profile data for offline use
@@ -302,7 +304,6 @@ class GameClient:  # Define the main application class that handles UI flow, aut
         except:
             pass  # If reading the scores fails, silently ignore
 
-
     def logout(self):
         """Излегување од акаунтот"""  # English: Log the user out
         self.username = None  # Clear logged-in username
@@ -430,7 +431,7 @@ class GameClient:  # Define the main application class that handles UI flow, aut
                 ws_url,
                 on_message=self.on_ws_message,
                 on_close=lambda ws, *args: print("Disconnected from session."),
-                on_open=lambda ws, *args: print("Connected to session.")
+                on_open=lambda ws, *args: self.on_ws_open(ws, player_name, player_avatar)
             )  # Create a websocket client and wire callbacks for receiving messages and lifecycle events
             threading.Thread(target=self.ws_app.run_forever,
                              daemon=True).start()  # Run the websocket client in a background thread so UI remains responsive
@@ -472,13 +473,73 @@ class GameClient:  # Define the main application class that handles UI flow, aut
         )  # Instantiate the SnakeLadderGame which will render the board and manage gameplay logic
 
     # ---------- WebSocket handlers ----------
+    def on_ws_open(self, ws, player_name, player_avatar):
+        """Called when WebSocket connection opens"""
+        # Send player information to server
+        player_info = {
+            "action": "player_info",
+            "display_name": player_name or self.display_name or self.username or "Player",
+            "display_avatar": player_avatar or self.display_avatar or self.avatar or "🙂"
+        }
+        try:
+            ws.send(json.dumps(player_info))
+            print(f"Sent player info: {player_info}")
+        except Exception as e:
+            print(f"Failed to send player info: {e}")
+
     def on_ws_message(self, ws, message: str):
-        data = json.loads(message)
-        if data["type"] == "state_update":
+        """Handle WebSocket messages"""
+        try:
+            data = json.loads(message)
+            print(f"Received: {data}")  # Debug logging
+
             if hasattr(self, "game_instance"):
-                self.game_instance.apply_server_state(data)
-        elif data["type"] == "notice":
-            print("Server notice:", data["message"])
+                if data["type"] == "state_update":
+                    self.game_instance.apply_server_state(data)
+                elif data["type"] == "player_info_update":
+                    self.update_game_players(data["players"])
+                elif data["type"] == "game_state":
+                    # Initial game state when joining
+                    self.game_instance.apply_server_state(data)
+                    if "players" in data:
+                        self.update_game_players(data["players"])
+                elif data["type"] == "notice":
+                    print("Server notice:", data["message"])
+                    # Also update players info if included
+                    if "players" in data:
+                        self.update_game_players(data["players"])
+
+        except json.JSONDecodeError:
+            print(f"Invalid JSON received: {message}")
+        except Exception as e:
+            print(f"Error handling message: {e}")
+
+    def update_game_players(self, players_data):
+        """Update player names and avatars in the game instance"""
+        if not hasattr(self, "game_instance") or not players_data:
+            return
+
+        # Convert server player data to game format
+        player_names = []
+        player_avatars = []
+
+        for username, player_info in players_data.items():
+            player_names.append(player_info["display_name"])
+            player_avatars.append(player_info["display_avatar"])
+
+        # Update game instance
+        if len(player_names) >= 1:
+            if self.is_host:
+                self.game_instance.update_player_info(0, player_names[0], player_avatars[0])
+                if len(player_names) >= 2:
+                    self.game_instance.update_player_info(1, player_names[1], player_avatars[1])
+            else:
+                # For joining player, reverse the order
+                if len(player_names) >= 2:
+                    self.game_instance.update_player_info(0, player_names[1], player_avatars[1])
+                self.game_instance.update_player_info(1, player_names[0], player_avatars[0])
+
+        print(f"Updated game players: {player_names} with avatars {player_avatars}")
 
     def on_game_end(self, winner_idx: int):
         """Кога играта завршува"""  # English: Called when a game finishes to perform cleanup and return to menu
