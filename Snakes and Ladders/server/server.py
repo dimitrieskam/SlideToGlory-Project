@@ -66,6 +66,80 @@ async def create_session(request: Request):
     return {"session_id": session_id, "invite_link": f"{base_url}/join/{session_id}"}
 
 
+@app.post("/update_stats")
+async def update_stats(username: str, result: str, duration: int = 0):
+    """Update player statistics"""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return {"status": "error", "message": "User not found"}
+
+        if result == "win":
+            user.wins = (user.wins or 0) + 1
+            if duration > 0 and (user.fastest_win_seconds is None or duration < user.fastest_win_seconds):
+                user.fastest_win_seconds = duration
+        elif result == "loss":
+            user.losses = (user.losses or 0) + 1
+
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
+@app.get("/stats")
+async def get_stats(username: str):
+    """Get player statistics"""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return {"status": "error", "message": "User not found"}
+
+        return {
+            "wins": user.wins or 0,
+            "losses": user.losses or 0,
+            "fastest_win_seconds": user.fastest_win_seconds or 9999
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
+@app.post("/update_profile")
+async def update_profile(username: str, new_name: str, avatar: str):
+    """Update user profile"""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return {"status": "error", "message": "User not found"}
+
+        # Check if new username is already taken (if different from current)
+        if new_name != username:
+            existing = db.query(User).filter(User.username == new_name).first()
+            if existing:
+                return {"status": "error", "message": "Username already taken"}
+
+        user.username = new_name
+        user.avatar = avatar
+        db.commit()
+
+        return {
+            "status": "success",
+            "username": new_name,
+            "avatar": avatar
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
 # ========= GAME WEBSOCKET ==========
 
 @app.websocket("/ws/{session_id}/{username}")

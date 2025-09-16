@@ -519,27 +519,41 @@ class GameClient:  # Define the main application class that handles UI flow, aut
         if not hasattr(self, "game_instance") or not players_data:
             return
 
-        # Convert server player data to game format
-        player_names = []
-        player_avatars = []
+        # Determine who is me and who is the opponent
+        me = self.username
+        others = [u for u in players_data if u != me]
+        other = others[0] if others else None
 
-        for username, player_info in players_data.items():
-            player_names.append(player_info["display_name"])
-            player_avatars.append(player_info["display_avatar"])
+        if self.is_host:
+            # Host is always slot 0
+            if me in players_data:
+                self.game_instance.update_player_info(
+                    0,
+                    players_data[me]["display_name"],
+                    players_data[me]["display_avatar"]
+                )
+            if other and other in players_data:
+                self.game_instance.update_player_info(
+                    1,
+                    players_data[other]["display_name"],
+                    players_data[other]["display_avatar"]
+                )
+        else:
+            # Guest is always slot 1
+            if other and other in players_data:
+                self.game_instance.update_player_info(
+                    0,
+                    players_data[other]["display_name"],
+                    players_data[other]["display_avatar"]
+                )
+            if me in players_data:
+                self.game_instance.update_player_info(
+                    1,
+                    players_data[me]["display_name"],
+                    players_data[me]["display_avatar"]
+                )
 
-        # Update game instance
-        if len(player_names) >= 1:
-            if self.is_host:
-                self.game_instance.update_player_info(0, player_names[0], player_avatars[0])
-                if len(player_names) >= 2:
-                    self.game_instance.update_player_info(1, player_names[1], player_avatars[1])
-            else:
-                # For joining player, reverse the order
-                if len(player_names) >= 2:
-                    self.game_instance.update_player_info(0, player_names[1], player_avatars[1])
-                self.game_instance.update_player_info(1, player_names[0], player_avatars[0])
-
-        print(f"Updated game players: {player_names} with avatars {player_avatars}")
+        print(f"Updated game players: {players_data}")
 
     def on_game_end(self, winner_idx: int):
         """Кога играта завршува"""  # English: Called when a game finishes to perform cleanup and return to menu
